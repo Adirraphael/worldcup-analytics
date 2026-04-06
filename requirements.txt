@@ -1,0 +1,11 @@
+streamlit>=1.32.0
+pandas>=2.0.0,<3.0.0
+# NumPy 2.0 removed np.unicode_ which is still used by snowflake-connector-python
+# and some Plotly internals — pin below 2.0 until upstream libraries are updated.
+numpy>=1.26.0,<2.0.0
+plotly>=5.19.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+snowflake-connector-python[pandas]>=3.7.0
+snowflake-sqlalchemy>=1.5.0
+sqlalchemy>=2.0.0
