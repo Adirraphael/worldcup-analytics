@@ -18,34 +18,55 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Credential resolution — works both locally (.env) and on Streamlit Cloud
+# ---------------------------------------------------------------------------
+
+def _get_secret(key: str, default: str | None = None) -> str | None:
+    """Read a credential from Streamlit secrets (Cloud) or env vars (local).
+
+    Priority:
+      1. st.secrets  — set via Streamlit Cloud → App settings → Secrets
+      2. os.environ  — loaded from .env by load_dotenv() above
+      3. default     — fallback value if neither source has the key
+    """
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass  # streamlit not available (e.g. running load_data.py directly)
+    return os.getenv(key, default)
+
+
+# ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
 
 def _get_connect_kwargs() -> dict:
     required = ["SNOWFLAKE_ACCOUNT", "SNOWFLAKE_USER", "SNOWFLAKE_PASSWORD"]
-    missing = [k for k in required if not os.getenv(k)]
+    missing = [k for k in required if not _get_secret(k)]
     if missing:
         raise EnvironmentError(
-            f"Missing required environment variables: {', '.join(missing)}. "
-            "Copy .env.example → .env and fill in your credentials."
+            f"Missing credentials: {', '.join(missing)}. "
+            "Add them to .env (local) or Streamlit Cloud → App settings → Secrets."
         )
 
     kwargs = {
-        "account":   os.environ["SNOWFLAKE_ACCOUNT"],
-        "user":      os.environ["SNOWFLAKE_USER"],
-        "password":  os.environ["SNOWFLAKE_PASSWORD"],
-        "warehouse": os.getenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
-        "database":  os.getenv("SNOWFLAKE_DATABASE",  "WORLDCUP"),
-        "schema":    os.getenv("SNOWFLAKE_SCHEMA",    "PUBLIC"),
+        "account":   _get_secret("SNOWFLAKE_ACCOUNT"),
+        "user":      _get_secret("SNOWFLAKE_USER"),
+        "password":  _get_secret("SNOWFLAKE_PASSWORD"),
+        "warehouse": _get_secret("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+        "database":  _get_secret("SNOWFLAKE_DATABASE",  "WORLDCUP"),
+        "schema":    _get_secret("SNOWFLAKE_SCHEMA",    "PUBLIC"),
     }
-    role = os.getenv("SNOWFLAKE_ROLE")
+    role = _get_secret("SNOWFLAKE_ROLE")
     if role:
         kwargs["role"] = role
     return kwargs
 
 
 def get_connection() -> snowflake.connector.SnowflakeConnection:
-    """Return an open Snowflake connection using credentials from .env."""
+    """Return an open Snowflake connection using credentials from .env or st.secrets."""
     return snowflake.connector.connect(**_get_connect_kwargs())
 
 
@@ -465,6 +486,33 @@ QUERIES = {
         FROM AWARD_WINNERS
         WHERE {_YEAR_SUBQUERY}
         ORDER BY AWARD_NAME
+    """,
+
+    # Per-tournament goal & match counts — used by the Evolution story page.
+    # Subquery pattern avoids cartesian-product issues when joining GOALS × MATCHES.
+    # HOST_WON is omitted here — derived in the dashboard from HOST_COUNTRY == WINNER.
+    # Goals counted without own-goal filtering to avoid type-cast issues across schemas.
+    "goals_per_tournament": f"""
+        SELECT
+            t.YEAR,
+            t.HOST_COUNTRY,
+            t.WINNER,
+            t.COUNT_TEAMS,
+            COALESCE(m.MATCHES_PLAYED, 0) AS MATCHES_PLAYED,
+            COALESCE(g.GOALS_SCORED,   0) AS GOALS_SCORED
+        FROM TOURNAMENTS t
+        LEFT JOIN (
+            SELECT TOURNAMENT_NAME, COUNT(DISTINCT MATCH_ID) AS MATCHES_PLAYED
+            FROM MATCHES
+            GROUP BY TOURNAMENT_NAME
+        ) m ON m.TOURNAMENT_NAME = t.TOURNAMENT_NAME
+        LEFT JOIN (
+            SELECT TOURNAMENT_NAME, COUNT(*) AS GOALS_SCORED
+            FROM GOALS
+            GROUP BY TOURNAMENT_NAME
+        ) g ON g.TOURNAMENT_NAME = t.TOURNAMENT_NAME
+        WHERE {_MEN_FILTER}
+        ORDER BY t.YEAR
     """,
 }
 
